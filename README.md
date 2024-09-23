@@ -19,7 +19,7 @@ Our approach follows a systematic exploration of different machine learning mode
   
 ## Key Files
 
-- **data/**: Contains the dataset used for model training and evaluation.
+- **data**: Contains the dataset used for model training and evaluation.
 - **eda.Rmd**: Exploratory Data Analysis performed to understand data patterns and relationships.
 - **subsampling.Rmd**: Subsampling techniques used for balancing classes in the dataset.
 - **modeling_glm_subset_selection_lasso.Rmd**: Logistic regression model using Lasso regularization for feature selection.
