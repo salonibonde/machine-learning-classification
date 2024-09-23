@@ -1,0 +1,96 @@
+
+# Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(openxlsx)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(pROC)
+library(gbm)
+library(randomForest)
+library(MASS)
+library(performanceEstimation)
+library(class)
+
+set.seed(123)
+```
+
+# Load Data
+```{r load_data}
+
+set.seed(1997)
+
+# Load data
+hotel_data <- read_excel("../data/hotel_data_cleaned.xlsx")
+dim(hotel_data)
+
+numerical_column_names <- c(
+  "LeadTime", 
+  "PreviousBookingsNotCanceled", 
+  "StaysInWeekendNights", 
+  "StaysInWeekNights", 
+  "Adults", 
+  "Children", 
+  "Babies", 
+  "BookingChanges", 
+  "DaysInWaitingList",
+  "TotalOfSpecialRequests"
+)
+
+numerical_columns <- hotel_data %>% dplyr::select(numerical_column_names)
+categorical_columns <- hotel_data %>% dplyr::select(-one_of(numerical_column_names))
+
+# Factorize everything except for the LeadTime and PreviousCancellations variables
+# Use a loop
+for (i in 1:ncol(categorical_columns)) {
+  categorical_columns[[i]] <- as.factor(categorical_columns[[i]])
+}
+
+# Normalize the numerical columns
+numerical_columns <- as.data.frame(scale(numerical_columns))
+
+# Merge data back together
+hotel_data <- cbind(numerical_columns, categorical_columns)
+
+head(hotel_data)
+```
+
+# Addressing Class Imbalance
+```{r sample_class_imbalance}
+
+# Choose all the rows where IsCanceled is 1
+canceled <- hotel_data[hotel_data$IsCanceled == 1, ]
+
+# Choose equal number of rows where IsCanceled is 0, randomly
+not_canceled <- hotel_data[hotel_data$IsCanceled == 0, ]
+not_canceled <- not_canceled[sample(nrow(not_canceled), nrow(canceled)), ]
+
+# Merge the two datasets
+hotel_data <- rbind(canceled, not_canceled)
+
+# Shuffle the data
+hotel_data <- hotel_data[sample(nrow(hotel_data)), ]
+
+# Split the data into training and testing sets
+set.seed(1997)
+
+# 80% of the data will be used for training
+train_index <- createDataPartition(hotel_data$IsCanceled, p = 0.80, list = FALSE)
+
+# Training set
+train_set <- hotel_data[train_index, ]
+
+# Testing set
+test_set <- hotel_data[-train_index, ]
+
+# Class balance
+class_balance <- prop.table(table(train_set$IsCanceled))
+class_balance
+
+# Save the result to a file
+write.xlsx(train_set, "../data/hotel_data_balanced_train.xlsx")
+write.xlsx(test_set, "../data/hotel_data_balanced_test.xlsx")
+```

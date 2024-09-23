@@ -1,0 +1,161 @@
+
+# Setup
+```{r, setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load libaries
+library(openxlsx)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(pROC)
+library(gbm)
+library(randomForest)
+library(MASS)
+library(performanceEstimation)
+library(class)
+library(boot)
+library(glmnet)
+
+# Set seed
+set.seed(123)
+
+# Define theme colors
+primary_color = "#191919ff"
+secondary_color = "#c67812ff"
+```
+
+# Load the data
+```{r data_loading}
+train_set <- read_excel("../data/hotel_data_balanced_train.xlsx")
+test_set <- read_excel("../data/hotel_data_balanced_test.xlsx")
+
+# Factorizing and normalizing
+numerical_names <- c(
+  "LeadTime", 
+  "PreviousBookingsNotCanceled", 
+  "StaysInWeekendNights", 
+  "StaysInWeekNights", 
+  "Adults", 
+  "Children", 
+  "Babies", 
+  "BookingChanges", 
+  "DaysInWaitingList",
+  "TotalOfSpecialRequests"
+)
+
+train_set_numerical <- train_set %>% dplyr::select(numerical_names)
+train_set_categorical <- train_set %>% dplyr::select(-one_of(numerical_names))
+
+test_set_numerical <- test_set %>% dplyr::select(numerical_names)
+test_set_categorical <- test_set %>% dplyr::select(-one_of(numerical_names))
+
+# Factorize everything except for the LeadTime and PreviousCancellations variables
+# Use a loop
+for (i in 1:ncol(train_set_categorical)) {
+  train_set_categorical[[i]] <- as.factor(train_set_categorical[[i]])
+}
+
+for (i in 1:ncol(train_set_categorical)) {
+  test_set_categorical[[i]] <- as.factor(test_set_categorical[[i]])
+}
+
+
+# Normalize the numerical variables
+train_set_numerical <- scale(train_set_numerical)
+test_set_numerical <- scale(test_set_numerical)
+
+# Merge data back together
+train_set <- cbind(train_set_numerical, train_set_categorical)
+test_set <- cbind(test_set_numerical, test_set_categorical)
+
+class_balance <- prop.table(table(train_set$IsCanceled))
+threshold <- class_balance[2]
+```
+
+```{r setup}
+
+# Create a matrix of predictors and response
+x <- model.matrix(IsCanceled ~ . - 1, data = train_set)
+y <- as.numeric(train_set$IsCanceled)
+
+```
+
+# Cross-Validation to find optimal lambda
+```{r cross_validation}
+
+set.seed(123) # For reproducibility
+lambda_cv = cv.glmnet(x, y, family = "binomial", alpha = 1, type.measure = "class", nlambda = 100)
+best_lambda <- lambda_cv$lambda.min # The lambda that gives the minimum mean cross-validated error
+best_lambda
+
+# Plot the cross-validation results
+plot(lambda_cv)
+```
+
+```{r lasso_model}
+# Now we build the lasso model using the best lambda
+lasso_model <- glmnet(x, y, family = "binomial", alpha = 1, lambda = best_lambda)
+
+# Coefficients of the lasso model
+coef(lasso_model)
+```
+
+```{r evaluate_model}
+
+# Predictions
+x_test <- model.matrix(IsCanceled ~ . - 1, data = test_set)
+
+# Predictions
+p_hat <- predict(lasso_model, s = best_lambda, newx = x_test, type = "response")
+y_hat <- ifelse(p_hat > threshold, 1, 0)
+
+TP <- sum(y_hat == 1 & test_set$IsCanceled == 1)
+TN <- sum(y_hat == 0 & test_set$IsCanceled == 0)
+FP <- sum(y_hat == 1 & test_set$IsCanceled == 0)
+FN <- sum(y_hat == 0 & test_set$IsCanceled == 1)
+
+accuracy <- (TP + TN) / (TP + TN + FP + FN)
+precision <- TP / (TP + FP)
+recall <- TP / (TP + FN)
+f1_score <- 2 * precision * recall / (precision + recall)
+
+print(paste("Accuracy: ", round(accuracy, 3)))
+print(paste("Precision: ", round(precision, 3)))
+print(paste("Recall: ", round(recall, 3)))
+print(paste("F1 Score: ", round(f1_score, 3)))
+```
+
+```{r plot_roc}
+roc_curve <- roc(test_set$IsCanceled, y_hat)
+auc_value <- auc(roc_curve)
+
+p <- ggroc(
+  roc_curve, 
+  col = secondary_color, 
+  lwd = 2,
+) +
+  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed") +
+  theme(panel.background = element_rect(fill = "transparent")) +
+  theme_minimal() +
+  # Add AUC to the plot
+  annotate(
+    "text",
+    x = 0.8,
+    y = 1,
+    label = paste("AUC:", round(auc_value, 2)),
+    size = 5,
+    color = secondary_color
+  )
+
+p
+
+ggsave(
+  plot = p,
+  filename = "./plots/glm_subset_selection_lasso_roc.png",
+  bg = "transparent",
+  width = 6,
+  height = 4
+)
+```

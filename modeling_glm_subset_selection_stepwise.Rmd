@@ -1,0 +1,419 @@
+
+# Setup
+```{r, setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load libaries
+library(openxlsx)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(pROC)
+library(gbm)
+library(randomForest)
+library(MASS)
+library(performanceEstimation)
+library(class)
+library(boot)
+
+# Set seed
+set.seed(123)
+
+# Define theme colors
+primary_color = "#191919ff"
+secondary_color = "#c67812ff"
+```
+
+# Load the data
+```{r data_loading}
+train_set <- read_excel("../data/hotel_data_balanced_train.xlsx")
+test_set <- read_excel("../data/hotel_data_balanced_test.xlsx")
+
+# Factorizing and normalizing
+numerical_names <- c(
+  "LeadTime", 
+  "PreviousBookingsNotCanceled", 
+  "StaysInWeekendNights", 
+  "StaysInWeekNights", 
+  "Adults", 
+  "Children", 
+  "Babies", 
+  "BookingChanges", 
+  "DaysInWaitingList",
+  "TotalOfSpecialRequests"
+)
+
+train_set_numerical <- train_set %>% dplyr::select(numerical_names)
+train_set_categorical <- train_set %>% dplyr::select(-one_of(numerical_names))
+
+test_set_numerical <- test_set %>% dplyr::select(numerical_names)
+test_set_categorical <- test_set %>% dplyr::select(-one_of(numerical_names))
+
+# Factorize everything except for the LeadTime and PreviousCancellations variables
+# Use a loop
+for (i in 1:ncol(train_set_categorical)) {
+  train_set_categorical[[i]] <- as.factor(train_set_categorical[[i]])
+}
+
+for (i in 1:ncol(train_set_categorical)) {
+  test_set_categorical[[i]] <- as.factor(test_set_categorical[[i]])
+}
+
+
+# Normalize the numerical variables
+train_set_numerical <- scale(train_set_numerical)
+test_set_numerical <- scale(test_set_numerical)
+
+# Merge data back together
+train_set <- cbind(train_set_numerical, train_set_categorical)
+test_set <- cbind(test_set_numerical, test_set_categorical)
+
+class_balance <- prop.table(table(train_set$IsCanceled))
+threshold <- class_balance[2]
+
+colnames(train_set)
+
+```
+
+# Define Metric Evaluation Functions
+```{r metric_evaluation_functions}
+
+# Define function that calculates misclassification rate
+misclass_rate <- function(model, data, truth) {
+  
+  # Make predictions
+  predicted <- predict(model, data, type="response")
+  
+  # Convert probabilities to binary predictions if necessary
+  if (is.numeric(predicted)) {
+    predicted_binary <- ifelse(predicted > threshold, 1, 0)
+  } else {
+    predicted_binary <- predicted
+  }
+    
+  FP <- sum((predicted_binary == 1) & (truth == 0))
+  FN <- sum((predicted_binary == 0) & (truth == 1))
+  
+  misclass_rate <- (FP + FN) / nrow(data)
+  return(round(misclass_rate, 3))
+}
+
+calculate_accuracy <- function(model, data, truth) {
+  misclass_rate <- misclass_rate(model, data, truth)
+  accuracy <- 1 - misclass_rate
+  return(round(accuracy, 3))
+}
+
+# Define function that calculates f1-score
+f1_score <- function(model, data, truth) {
+  
+  # Make predictions
+  predicted <- predict(model, data, type="response")
+  
+  # Convert probabilities to binary predictions if necessary
+  if (is.numeric(predicted)) {
+    predicted_binary <- ifelse(predicted > threshold, 1, 0)
+  } else {
+    predicted_binary <- predicted
+  }
+
+  
+  # Calculate True Positives (TP), False Positives (FP), and False Negatives (FN)
+  TP <- sum((predicted_binary == 1) & (truth == 1))
+  FP <- sum((predicted_binary == 1) & (truth == 0))
+  FN <- sum((predicted_binary == 0) & (truth == 1))
+  
+  # Calculate Precision and Recall
+  precision <- TP / (TP + FP)
+  recall <- TP / (TP + FN)
+  
+  # Calculate F1 Score
+  f1_score <- 2 * ((precision * recall) / (precision + recall))
+  
+  # Return F1 Score
+  return(round(f1_score, 3))
+}
+
+calculate_precision <- function(model, data, truth) {
+  
+  # Make predictions
+  predicted <- predict(model, data, type="response")
+  
+  # Convert probabilities to binary predictions if necessary
+  if (is.numeric(predicted)) {
+    predicted_binary <- ifelse(predicted > threshold, 1, 0)
+  } else {
+    predicted_binary <- predicted
+  }
+
+  
+  # Calculate True Positives (TP), False Positives (FP), and False Negatives (FN)
+  TP <- sum((predicted_binary == 1) & (truth == 1))
+  FP <- sum((predicted_binary == 1) & (truth == 0))
+  
+  # Calculate Precision
+  precision <- TP / (TP + FP)
+  
+  # Return Precision
+  return(round(precision, 3))
+}
+
+calculate_recall <- function(model, data, truth) {
+  
+  # Make predictions
+  predicted <- predict(model, data, type="response")
+  
+  # Convert probabilities to binary predictions if necessary
+  if (is.numeric(predicted)) {
+    predicted_binary <- ifelse(predicted > threshold, 1, 0)
+  } else {
+    predicted_binary <- predicted
+  }
+
+  
+  # Calculate True Positives (TP), False Positives (FP), and False Negatives (FN)
+  TP <- sum((predicted_binary == 1) & (truth == 1))
+  FN <- sum((predicted_binary == 0) & (truth == 1))
+  
+  # Calculate Recall
+  recall <- TP / (TP + FN)
+  
+  # Return Recall
+  return(round(recall, 3))
+}
+```
+
+
+# Test a full logistic regression model
+```{r full_model_testing}
+
+full_model <- glm(
+  IsCanceled ~ ., 
+  data = train_set, 
+  family = "binomial"
+)
+
+full_model_accuracy <- calculate_accuracy(full_model, test_set, test_set$IsCanceled)
+full_model_precision <- calculate_precision(full_model, test_set, test_set$IsCanceled)
+full_model_recall <- calculate_recall(full_model, test_set, test_set$IsCanceled)
+
+
+# Print results
+print(paste("Full Model Accuracy:", full_model_accuracy))
+print(paste("Full Model Precision:", full_model_precision))
+print(paste("Full Model Recall:", full_model_recall))
+```
+
+# Setup Stepwise Selection
+```{r stepwise_selection_setup}
+
+# Initial setup
+current_model_vars <- c() # Start with no predictors
+full_vars <- colnames(train_set)[-which(colnames(train_set) == "IsCanceled")]
+
+step <- 0 # To track the iteration steps
+keep_adding <- TRUE # Control loop continuation
+nr_of_variables <- 20
+
+results <- data.frame(
+  step = numeric(),
+  variables = character(),
+  train_misc_rate = numeric(),
+  train_f1 = numeric(),
+  test_misc_rate = numeric(),
+  test_f1 = numeric()
+)
+```
+
+# Execute Stepwise Selection
+```{r stepwise_selection}
+
+# To perform the stepwise forward selection, we will use the following approach:
+# 1. For each predictor, we fit a logistic regression and calculate evaluation metrics
+
+while(keep_adding) {
+  
+  best_var <- NULL # Placeholder for the best variable to add
+  
+  best_train_misc_rate <- 1
+  best_train_f1 <- 0
+  best_test_misc_rate <- 1
+  best_test_f1 <- 0
+  
+  for (var in full_vars) {
+    
+    # Skip if the variable is already in the model
+    if(var %in% current_model_vars) next
+    
+    # Construct a formula string for the current model with the additional variable
+    formula_str <- paste("IsCanceled ~", paste(c(current_model_vars, var), collapse = " + "))
+    
+    # Fit the model
+    model <- glm(
+      as.formula(formula_str), 
+      data = train_set,
+      family = "binomial"
+    )
+    
+    # Calculate results
+    train_misc_rate <- misclass_rate(model, train_set, train_set$IsCanceled)
+    train_f1 <- f1_score(model, train_set, train_set$IsCanceled)
+    test_misc_rate <- misclass_rate(model, test_set, test_set$IsCanceled)
+    test_f1 <- f1_score(model, test_set, test_set$IsCanceled)
+    
+    # Check if the current variable is better than the previous best
+    if(test_misc_rate < best_test_misc_rate) {
+      best_var <- var
+      best_train_misc_rate <- train_misc_rate
+      best_train_f1 <- train_f1
+      best_test_misc_rate <- test_misc_rate
+      best_test_f1 <- test_f1
+    }
+    
+  }
+  
+  # Check if a better variable was found
+  if(!is.null(best_var)) {
+    current_model_vars <- c(current_model_vars, best_var) # Add the best variable to the model
+    full_vars <- setdiff(full_vars, best_var) # Remove it from the pool of potential variables
+    step <- step + 1
+    cat("Step", step, ": Added", best_var, "to the model.\n")
+    
+    # Add to results table
+    results <- rbind(
+      results,
+      data.frame(
+        step = step,
+        variables = paste("+ ", best_var),
+        train_misc_rate = train_misc_rate,
+        train_f1 = train_f1,
+        test_misc_rate = test_misc_rate,
+        test_f1 = test_f1
+      )
+    )
+    
+  } else {
+    keep_adding <- FALSE # Stop if no improvement
+  }
+  
+  # Stop if we have added 3 variables
+  if (step == nr_of_variables) {
+    keep_adding <- FALSE
+  }
+}
+
+```
+
+# Show Results
+```{r results}
+
+results
+
+
+# Use ggplot to visualize the results
+subset_misclassication_plot <- ggplot(
+  results,
+  aes(x = step, y = train_misc_rate, color = "Train Misclassification Rate")
+) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  geom_line(
+    aes(x = step, y = test_misc_rate, color = "Test Misclassification Rate"),
+    linewidth = 1
+  ) +
+  geom_point(
+    aes(x = step, y = test_misc_rate, color = "Test Misclassification Rate")
+  ) +
+  scale_color_manual(
+    values = c("Train Misclassification Rate" = primary_color, "Test Misclassification Rate" = secondary_color)
+  ) +
+  labs(
+    x = "Step",
+    y = "Misclassification Rate",
+    color = "Metric"
+) + 
+  theme(panel.background = element_rect(fill = "transparent")) +
+  theme_minimal()
+
+# Use ggplot to visualize the results for f1-score
+subset_f1_plot <- ggplot(
+  results,
+  aes(x = step, y = train_f1, color = "Training Set"),
+) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  geom_line(
+    aes(x = step, y = test_f1, color = "Testing Set"),
+    linewidth = 1
+  ) +
+  geom_point(
+    aes(x = step, y = test_f1, color = "Testing Set"),
+  ) +
+  scale_color_manual(
+    values = c("Training Set" = primary_color, "Testing Set" = secondary_color)
+  ) +
+  labs(
+    x = "Step",
+    y = "F1 Score",
+    color = "Dataset"
+) + 
+  theme(panel.background = element_rect(fill = "transparent")) +
+  theme_minimal()
+
+subset_misclassication_plot
+
+# Save the plots
+ggsave(
+  plot = subset_misclassication_plot,
+  filename = "./plots/subset_selection_misclassification_plot.png",
+  bg = "transparent",
+  width = 6,
+  height = 4
+)
+ggsave(
+  plot = subset_f1_plot,
+  filename = "./plots/subset_selection_f1score_plot.png",
+  bg = "transparent",
+  width = 6,
+  height = 4
+)
+
+```
+
+# Building the Final Model with the Selected Variables
+```{r final_model}
+
+# Construct the formula string for the final model
+
+final_model <- glm( 
+  IsCanceled ~ 
+    DepositType + 
+    LeadTime + 
+    MarketSegment +
+    TotalOfSpecialRequests +
+    BookingChanges +
+    CustomerType +
+    CountryRegion +
+    Meal +
+    IsRepeatedGuest,
+  data = train_set,
+  family = "binomial"
+)
+
+# Show the summary of the final model
+summary(final_model)
+
+# Make predictions
+test_set$predicted <- predict(final_model, test_set, type = "response")
+
+# Calculate evaluation metrics
+final_model_accuracy <- calculate_accuracy(final_model, test_set, test_set$IsCanceled)
+final_mode_precision <- calculate_precision(final_model, test_set, test_set$IsCanceled)
+final_model_recall <- calculate_recall(final_model, test_set, test_set$IsCanceled)
+
+# Print the results
+cat("Final Model Accuracy:", final_model_accuracy, "\n")
+cat("Final Model Precision:", final_mode_precision, "\n")
+cat("Final Model Recall:", final_model_recall, "\n")
+```

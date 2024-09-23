@@ -1,0 +1,1376 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(openxlsx)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(pROC)
+library(gbm)
+library(randomForest)
+library(MASS)
+```
+
+```{r, color_definitions}
+
+primary_color = "#C67812"
+secondary_color = "black"
+
+```
+
+```{r, load_data}
+hotel_data <- read_excel("../data/H1.xlsx")
+
+# Save to a new file in excel 
+# write.xlsx(hotel_data, "../data/hotel_data_enriched.xlsx")
+
+head(hotel_data)
+```
+
+```{r, variable_is_canceled}
+
+# Now we will perform univariate analysis on the hotel_data dataframe
+# We take each variable one by one and explore the relationship between the variable and the target variable. We also explore the distribution of the variable. We analyze if we need to transform the variable or if we need to remove any outliers. For transforming the variable, we can use log transformation, square root transformation, etc. But we can also just bin the data, aggregate, etc.
+
+# We will start with the variable "is_canceled"
+# ratio
+is_canceled <- hotel_data %>%
+  group_by(IsCanceled) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+
+is_canceled
+
+# Factorize
+hotel_data$IsCanceled <- as.factor(hotel_data$IsCanceled)
+
+
+# Plot the distribution of the variable in a pie chart
+ggplot(hotel_data, aes(x = "", fill = IsCanceled)) +
+  geom_bar(width = 1) +
+  coord_polar("y", start = 0) +
+  labs(title = "Distribution of Is Canceled") +
+  scale_fill_manual(values = c(secondary_color, primary_color)) + 
+  theme_minimal()
+
+```
+
+```{r, variable_lead_time, collapse=TRUE}
+# We move on to variable "lead_time"
+# distribution
+# summary statistics
+summary(hotel_data$LeadTime)
+
+# how many values are missing
+missing_lead_time <- sum(is.na(hotel_data$LeadTime))
+missing_lead_time
+
+ggplot(hotel_data, aes(x = LeadTime)) +
+  geom_histogram(binwidth = 50, fill = primary_color, color = "black") +
+  labs(title = "Distribution of Lead Time",
+       x = "Lead Time",
+       y = "Count")
+
+# Removing the outliers
+hotel_data <- hotel_data %>%
+  filter(LeadTime < 270)
+
+# Plot lead time by is_canceled in boxplots
+p <- ggplot(
+  hotel_data, 
+  aes(
+    x = IsCanceled,
+    y = LeadTime, 
+    fill = IsCanceled
+  )
+) +
+  geom_boxplot() +
+  labs(
+       x = "Is Canceled",
+       y = "Lead Time"
+  ) +
+  scale_fill_manual(
+    values = c(
+      secondary_color, 
+      primary_color
+    )
+  ) + 
+  theme(panel.background = element_rect(fill = "transparent")) +
+  theme_minimal()
+
+p
+
+ggsave(
+  plot = p,
+  filename = "./plots/Leadtime_isCanceled.png",
+  bg = "transparent"
+)
+
+```
+
+```{r, variable_arrival_date_year, collapse=TRUE}
+
+# We move on to variable "arrival_date_year"
+
+# 1. summary statistics
+summary(hotel_data$ArrivalDateYear)
+
+# 2. missing values
+missing_arrival_date_year <- sum(is.na(hotel_data$ArrivalDateYear))
+missing_arrival_date_year
+
+# 3. print the unique values
+unique(hotel_data$ArrivalDateYear)
+
+# 4. count by year
+count_by_year <- hotel_data %>%
+  group_by(ArrivalDateYear) %>%
+  summarise(Count = n())
+count_by_year
+
+# 3. plotting
+ggplot(hotel_data, aes(x = ArrivalDateYear)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Arrival Date Year",
+       x = "Arrival Date Year",
+       y = "Count") + 
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.5)
+
+# Factorize this variable
+hotel_data$ArrivalDateYear <- as.factor(hotel_data$ArrivalDateYear)
+
+# Plot the distribution of the variable by is_canceled
+p <- ggplot(
+  hotel_data, 
+  aes(
+    x = ArrivalDateYear, # Change this to variable name
+    fill = IsCanceled
+  )
+) +
+  geom_bar(
+    position = "fill"
+  ) +
+  labs(
+       x = "Arrival Date Year",
+       y = "Proportion of canceled"
+  ) +
+  scale_fill_manual(
+    values = c(
+      secondary_color, # Defined colors
+      primary_color
+    )
+  ) + 
+  theme(panel.background = element_rect(fill = "transparent")) +
+  theme_minimal()
+
+p
+
+ggsave(
+  plot = p,
+  filename = "./plots/ArrivalDateYear_isCanceled.png",
+  bg = "transparent"
+)
+
+```
+
+```{r, variable_arrival_date_month, collapse=TRUE}
+
+# We move on to variable "arrival_date_month"
+
+
+# 0. First rename the months to numbers so that we can order them
+hotel_data$ArrivalDateMonth <- recode(hotel_data$ArrivalDateMonth, "January" = "01", "February" = "02", "March" = "03", "April" = "04", "May" = "05", "June" = "06", "July" = "07", "August" = "08", "September" = "09", "October" = "10", "November" = "11", "December" = "12")
+
+# 1. summary statistics
+summary(hotel_data$ArrivalDateMonth)
+
+# 2. missing values
+missing_arrival_date_month <- sum(is.na(hotel_data$ArrivalDateMonth))
+missing_arrival_date_month
+
+# 3. print the unique values
+unique(hotel_data$ArrivalDateMonth)
+
+# 4. count by month
+count_by_month <- hotel_data %>%
+  group_by(ArrivalDateMonth) %>%
+  summarise(Count = n())
+count_by_month
+
+# Factorize this variable
+hotel_data$ArrivalDateMonth <- as.factor(hotel_data$ArrivalDateMonth) 
+
+# Group the months by being in season and offseason
+hotel_data <- hotel_data %>%
+  mutate(
+    ArrivalDateMonth_Season = case_when(
+      ArrivalDateMonth %in% c("04", "05", "06", "07", "08", "09", "10") ~ "InSeason",
+      ArrivalDateMonth %in% c("01", "02", "03", "11", "12") ~ "OutSeason"
+    )
+  )
+hotel_data$ArrivalDateMonth_Season <- as.factor(hotel_data$ArrivalDateMonth_Season)
+
+# Plot the distribution of the variable by is_canceled
+p <- ggplot(
+  hotel_data, 
+  aes(
+    x = ArrivalDateMonth, # Change this to variable name
+    fill = IsCanceled
+  )
+) +
+  geom_bar(
+    position = "fill"
+  ) +
+  labs(
+       x = "Arrival Date Month",
+       y = "Propotion"
+  ) +
+  scale_fill_manual(
+    values = c(
+      secondary_color, # Defined colors
+      primary_color
+    )
+  ) + 
+  theme(panel.background = element_rect(fill = "transparent")) +
+  theme_minimal()
+
+p
+
+ggsave(
+  plot = p,
+  filename = "./plots/ArrivalDateMonth_isCanceled.png",
+  bg = "transparent"
+)
+
+# Plot the distribution of the variable by is_canceled
+p <- ggplot(
+  hotel_data, 
+  aes(
+    x = ArrivalDateMonth_Season, # Change this to variable name
+    fill = IsCanceled
+  )
+) +
+  geom_bar(
+    position = "fill"
+  ) +
+  labs(
+       x = "Arrival Season",
+       y = "Proportion"
+  ) +
+  scale_fill_manual(
+    values = c(
+      secondary_color, # Defined colors
+      primary_color
+    )
+  ) + 
+  theme(panel.background = element_rect(fill = "transparent")) +
+  theme_minimal()
+
+p
+
+ggsave(
+  plot = p,
+  filename = "./plots/ArrivalDateMonth_Season_IsCanceled.png",
+  bg = "transparent"
+)
+
+```
+
+```{r, variable_arrival_date_week_number, collapse=TRUE}
+
+# We move on to variable "arrival_date_week_number"
+
+# 1. summary statistics
+summary(hotel_data$ArrivalDateWeekNumber)
+
+# 2. missing values
+missing_arrival_date_week_number <- sum(is.na(hotel_data$ArrivalDateWeekNumber))
+missing_arrival_date_week_number
+
+# 3. print the unique values
+unique(hotel_data$ArrivalDateWeekNumber)
+
+# 4. count by week number
+count_by_week_number <- hotel_data %>%
+  group_by(ArrivalDateWeekNumber) %>%
+  summarise(Count = n())
+count_by_week_number
+
+# 5. plotting
+ggplot(hotel_data, aes(x = ArrivalDateWeekNumber)) +
+  geom_bar(fill = primary_color, color = "black") +
+  labs(title = "Distribution of Arrival Date Week Number",
+       x = "Arrival Date Week Number",
+       y = "Count")
+
+# Factorize the week number
+hotel_data$ArrivalDateWeekNumber <- as.factor(hotel_data$ArrivalDateWeekNumber)
+```
+
+```{r, variable_arrival_date_day_of_month, collapse=TRUE}
+
+# We move on to variable "arrival_date_day_of_month"
+
+# 1. summary statistics
+summary(hotel_data$ArrivalDateDayOfMonth)
+
+# 2. missing values
+missing_arrival_date_day_of_month <- sum(is.na(hotel_data$ArrivalDateDayOfMonth))
+missing_arrival_date_day_of_month
+
+# 3. print the unique values
+unique(hotel_data$ArrivalDateDayOfMonth)
+
+# 4. count by day of month
+count_by_day_of_month <- hotel_data %>%
+  group_by(ArrivalDateDayOfMonth) %>%
+  summarise(Count = n())
+count_by_day_of_month
+
+# 5. plotting
+ggplot(hotel_data, aes(x = ArrivalDateDayOfMonth)) +
+  geom_bar(fill = primary_color, color = "black") +
+  labs(title = "Distribution of Arrival Date Day of Month",
+       x = "Arrival Date Day of Month",
+       y = "Count")
+```
+
+```{r, variable_previous_bookings_not_canceled, collapse=TRUE}
+
+# We move on to variable "previous_bookings_not_canceled"
+
+# 1. summary statistics
+summary(hotel_data$PreviousBookingsNotCanceled)
+
+# 2. missing values
+missing_previous_bookings_not_canceled <- sum(is.na(hotel_data$PreviousBookingsNotCanceled))
+missing_previous_bookings_not_canceled
+
+# 3. print the unique values
+unique(hotel_data$PreviousBookingsNotCanceled)
+
+# 4. count by previous bookings not canceled
+count_by_previous_bookings_not_canceled <- hotel_data %>%
+  group_by(PreviousBookingsNotCanceled) %>%
+  summarise(Count = n())
+
+# 5. plotting
+ggplot(hotel_data, aes(x = PreviousBookingsNotCanceled)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Previous Bookings Not Canceled",
+       x = "Previous Bookings Not Canceled",
+       y = "Count")
+
+# Plot the distribution of the variable by is_canceled
+p <- ggplot(
+  hotel_data, 
+  aes(
+    x = PreviousBookingsNotCanceled, # Change this to variable name
+    fill = IsCanceled
+  )
+) +
+  geom_bar(
+    position = "fill"
+  ) +
+  labs(
+       x = "PreviousBookingsNotCanceled",
+       y = "Proportion"
+  ) +
+  scale_fill_manual(
+    values = c(
+      secondary_color, # Defined colors
+      primary_color
+    )
+  ) + 
+  theme(panel.background = element_rect(fill = "transparent")) +
+  theme_minimal()
+
+p
+
+ggsave(
+  plot = p,
+  filename = "./plots/PreviousBookingsNotCanceled_isCanceled.png",
+  bg = "transparent"
+)
+
+```
+
+```{r, variable_stays_in_weekend_nights, collapse=TRUE}
+
+# We move on to variable "stays_in_weekend_nights"
+
+# 1. summary statistics
+summary(hotel_data$StaysInWeekendNights)
+
+# 2. missing values
+missing_stays_in_weekend_nights <- sum(is.na(hotel_data$StaysInWeekendNights))
+missing_stays_in_weekend_nights
+
+# 3. print the unique values
+unique(hotel_data$StaysInWeekendNights)
+
+# 4. count by stays in weekend nights
+count_by_stays_in_weekend_nights <- hotel_data %>%
+  group_by(StaysInWeekendNights) %>%
+  summarise(Count = n())
+count_by_stays_in_weekend_nights
+
+# 5. plotting
+ggplot(hotel_data, aes(x = StaysInWeekendNights)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Stays in Weekend Nights",
+       x = "Stays in Weekend Nights",
+       y = "Count")
+
+# Group by yes or no
+count_by_stays_in_weekend_nights <- hotel_data %>%
+  mutate(StaysInWeekendNights = ifelse(StaysInWeekendNights > 0, 1, 0)) %>%
+  group_by(StaysInWeekendNights) %>%
+  summarise(Count = n())
+
+# print ratio
+count_by_stays_in_weekend_nights %>%
+  mutate(Ratio = Count / sum(Count))
+
+# ADDING TO THE HOTEL DATA SET
+hotel_data <- hotel_data %>%
+  mutate(StaysInWeekendNights_bin = ifelse(StaysInWeekendNights > 0, 1, 0))
+hotel_data$StaysInWeekendNights_bin <- as.factor(hotel_data$StaysInWeekendNights_bin)
+
+# Plot the distribution of the variable by is_canceled
+p <- ggplot(
+  hotel_data, 
+  aes(
+    x = StaysInWeekendNights_bin, # Change this to variable name
+    fill = IsCanceled
+  )
+) +
+  geom_bar(
+    position = "fill"
+  ) +
+  labs(
+       x = "StaysInWeekendNights_bin",
+       y = "Proportion"
+  ) +
+  scale_fill_manual(
+    values = c(
+      secondary_color, # Defined colors
+      primary_color
+    )
+  ) + 
+  theme(panel.background = element_rect(fill = "transparent")) +
+  theme_minimal()
+
+p
+
+ggsave(
+  plot = p,
+  filename = "./plots/StaysInWeekendNights_bin_isCanceled.png",
+  bg = "transparent"
+)
+
+```
+
+```{r, variable_stays_in_week_nights, collapse=TRUE}
+
+# We move on to variable "stays_in_week_nights"
+
+# 1. summary statistics
+summary(hotel_data$StaysInWeekNights)
+
+# 2. missing values
+missing_stays_in_week_nights <- sum(is.na(hotel_data$StaysInWeekNights))
+missing_stays_in_week_nights
+
+# 3. print the unique values
+unique(hotel_data$StaysInWeekNights)
+
+# 4. count by stays in week nights
+count_by_stays_in_week_nights <- hotel_data %>%
+  group_by(StaysInWeekNights) %>%
+  summarise(Count = n())
+count_by_stays_in_week_nights
+
+# 5. plotting
+ggplot(hotel_data, aes(x = StaysInWeekNights)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Stays in Week Nights",
+       x = "Stays in Week Nights",
+       y = "Count")
+
+# Create a new variable that bins the stays in week nights into 3 categories: 0, 1, 2
+# 0 -> no prior stays
+# 1 -> 1-5 stays
+# 2 -> more than 5 stays
+hotel_data <- hotel_data %>%
+  mutate(StaysInWeekNights_bin = ifelse(StaysInWeekNights == 0, 0,
+                                        ifelse(StaysInWeekNights >= 1 & StaysInWeekNights <= 3, 1, 2)))
+# Factorize
+hotel_data$StaysInWeekNights_bin <- as.factor(hotel_data$StaysInWeekNights_bin)
+
+# Print the ratio
+count_by_stays_in_week_nights_bin <- hotel_data %>%
+  group_by(StaysInWeekNights_bin) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_stays_in_week_nights_bin
+
+
+# Plot the binned variable
+ggplot(hotel_data, aes(x = StaysInWeekNights_bin)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Stays in Week Nights",
+       x = "Stays in Week Nights",
+       y = "Count")
+```
+
+```{r, variable_adults, collapse=TRUE}
+
+# We move on to variable "adults"
+
+# 1. summary statistics
+summary(hotel_data$Adults)
+
+# 2. missing values
+missing_adults <- sum(is.na(hotel_data$Adults))
+missing_adults
+
+# 3. print the unique values
+unique(hotel_data$Adults)
+
+# 4. count by adults
+count_by_adults <- hotel_data %>%
+  group_by(Adults) %>%
+  summarise(Count = n())
+count_by_adults
+
+# 5. plotting
+ggplot(hotel_data, aes(x = Adults)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Adults",
+       x = "Adults",
+       y = "Count")
+
+# CLEANING
+# We will remove the rows where the number of adults is 0
+hotel_data <- hotel_data %>%
+  filter(Adults > 0)
+# Bin the adults into 3 categories: 1, 2, >3
+hotel_data <- hotel_data %>%
+  mutate(Adults_bin = ifelse(Adults == 1, 1,
+                             ifelse(Adults == 2, 2, 3)))
+# Factorize
+hotel_data$Adults_bin <- as.factor(hotel_data$Adults_bin)
+
+# Print the ratio
+count_by_adults_bin <- hotel_data %>%
+  group_by(Adults_bin) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_adults_bin
+
+```
+
+```{r, variable_children, collapse=TRUE}
+
+# We move on to variable "children"
+
+# 1. summary statistics
+summary(hotel_data$Children)
+
+# 2. missing values
+missing_children <- sum(is.na(hotel_data$Children))
+missing_children
+
+# 3. print the unique values
+unique(hotel_data$Children)
+
+# 4. count by children
+count_by_children <- hotel_data %>%
+  group_by(Children) %>%
+  summarise(Count = n())
+count_by_children
+
+# 5. plotting
+ggplot(hotel_data, aes(x = Children)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Children",
+       x = "Children",
+       y = "Count")
+
+# 6. Bin the children into 3 categories: 0 or more
+hotel_data <- hotel_data %>%
+  mutate(Children_bin = ifelse(Children == 0, 0, 1))
+# Factorize
+hotel_data$Children_bin <- as.factor(hotel_data$Children_bin)
+
+# Plot after binning
+ggplot(hotel_data, aes(x = Children_bin)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Children",
+       x = "Children",
+       y = "Count")
+```
+
+```{r, variable_babies, collapse=TRUE}
+
+# We move on to variable "babies"
+
+# 1. summary statistics
+summary(hotel_data$Babies)
+
+# 2. missing values
+missing_babies <- sum(is.na(hotel_data$Babies))
+missing_babies
+
+# 3. print the unique values
+unique(hotel_data$Babies)
+
+# 4. count by babies
+count_by_babies <- hotel_data %>%
+  group_by(Babies) %>%
+  summarise(Count = n())
+
+# 5. plotting
+ggplot(hotel_data, aes(x = Babies)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Babies",
+       x = "Babies",
+       y = "Count")
+
+# 6. Bin the babies into 2 categories: 0 or more
+hotel_data <- hotel_data %>%
+  mutate(Babies_bin = ifelse(Babies == 0, 0, 1))
+
+# Factorize
+hotel_data$Babies_bin <- as.factor(hotel_data$Babies_bin)
+
+```
+
+```{r, variable_meal, collapse=TRUE}
+
+# We move on to variable "meal"
+
+# 1. summary statistics
+summary(hotel_data$Meal)
+
+# 2. missing values
+missing_meal <- sum(is.na(hotel_data$Meal))
+missing_meal
+
+# 3. print the unique values
+unique(hotel_data$Meal)
+
+# 4. count by meal and ratio
+count_by_meal <- hotel_data %>%
+  group_by(Meal) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_meal
+
+# 5. plotting
+ggplot(hotel_data, aes(x = Meal)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Meal",
+       x = "Meal",
+       y = "Count")
+
+
+# Change undefined to code 'NO'
+hotel_data <- hotel_data %>%
+  mutate(Meal = ifelse(Meal == "Undefined", "NO", Meal))
+
+unique(hotel_data$Meal)
+
+# Factorize
+hotel_data$Meal <- as.factor(hotel_data$Meal)
+```
+
+```{r, variable_country, collapse=TRUE}
+
+# We move on to variable "country"
+
+# 1. summary statistics
+summary(hotel_data$Country)
+
+# 2. missing values
+missing_country <- sum(is.na(hotel_data$Country))
+missing_country
+
+# Merging with world bank data
+# 1. First load the world bank data from the excel sheet
+world_bank_data <- read_excel("../data/world_bank_data.xlsx")
+head(world_bank_data)
+
+# Change country code CN to CHN
+hotel_data <- hotel_data %>%
+  mutate(Country = ifelse(Country == "CN", "CHN", Country))
+# Sanity check, no more CN
+unique(hotel_data$Country)
+
+# Join the hotel data with the world bank data
+hotel_data <- hotel_data %>%
+  left_join(world_bank_data, by = c("Country" = "country_code"))
+
+# Factorize
+hotel_data$region <- as.factor(hotel_data$region)
+hotel_data$income_group <- as.factor(hotel_data$income_group)
+
+# 3. print the unique values
+unique(hotel_data$region)
+unique(hotel_data$income_group)
+
+# How many NA values for region and income_group?
+missing_region <- sum(is.na(hotel_data$region))
+missing_region
+missing_income_group <- sum(is.na(hotel_data$income_group))
+missing_income_group
+
+# Drop the rows with NA values for region and income_group
+hotel_data <- hotel_data %>%
+  filter(!is.na(region) & !is.na(income_group))
+
+# Count by region and ratio
+count_by_region <- hotel_data %>%
+  group_by(region) %>%
+  summarise(Count = n(), Ratio = Count / nrow(hotel_data))
+count_by_region
+
+# Count by income_group and ratio
+count_by_income_group <- hotel_data %>%
+  group_by(income_group) %>%
+  summarise(Count = n(), Ratio = Count / nrow(hotel_data))
+count_by_income_group
+
+```
+
+```{r, market_segment, collapse=TRUE}
+
+# We move on to variable "market_segment"
+
+# 1. summary statistics
+summary(hotel_data$MarketSegment)
+
+# 2. missing values
+missing_market_segment <- sum(is.na(hotel_data$MarketSegment))
+missing_market_segment
+
+# 3. print the unique values
+unique(hotel_data$MarketSegment)
+
+# 4. count by market_segment and ratio
+count_by_market_segment <- hotel_data %>%
+  group_by(MarketSegment) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_market_segment
+
+# 5. plotting
+ggplot(hotel_data, aes(x = MarketSegment)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Market Segment",
+       x = "Market Segment",
+       y = "Count")
+
+# Factorize
+hotel_data$MarketSegment <- as.factor(hotel_data$MarketSegment)
+```
+
+```{r, variable_distribution_channel, collapse=TRUE}
+
+# We move on to variable "distribution_channel"
+
+# 1. summary statistics
+summary(hotel_data$DistributionChannel)
+
+# 2. missing values
+missing_distribution_channel <- sum(is.na(hotel_data$DistributionChannel))
+missing_distribution_channel
+
+# 3. print the unique values
+unique(hotel_data$DistributionChannel)
+
+# 4. count by distribution_channel and ratio
+count_by_distribution_channel <- hotel_data %>%
+  group_by(DistributionChannel) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_distribution_channel
+
+# 5. plotting
+ggplot(hotel_data, aes(x = DistributionChannel)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Distribution Channel",
+       x = "Distribution Channel",
+       y = "Count")
+
+# Factorize
+hotel_data$DistributionChannel <- as.factor(hotel_data$DistributionChannel)
+```
+
+```{r, is_repeated_guest, collapse=TRUE}
+
+# We move on to variable "is_repeated_guest"
+
+# 1. summary statistics
+summary(hotel_data$IsRepeatedGuest)
+
+# 2. missing values
+missing_is_repeated_guest <- sum(is.na(hotel_data$IsRepeatedGuest))
+missing_is_repeated_guest
+
+# 3. print the unique values
+unique(hotel_data$IsRepeatedGuest)
+
+# 4. count by is_repeated_guest and ratio
+count_by_is_repeated_guest <- hotel_data %>%
+  group_by(IsRepeatedGuest) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_is_repeated_guest
+
+# 5. plotting
+ggplot(hotel_data, aes(x = IsRepeatedGuest)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Is Repeated Guest",
+       x = "Is Repeated Guest",
+       y = "Count")
+
+# Factorize
+hotel_data$IsRepeatedGuest <- as.factor(hotel_data$IsRepeatedGuest)
+```
+
+```{r, previous_cancellations, collapse=TRUE}
+
+# We move on to variable "previous_cancellations"
+
+# 1. summary statistics
+summary(hotel_data$PreviousCancellations)
+
+# 2. missing values
+missing_previous_cancellations <- sum(is.na(hotel_data$PreviousCancellations))
+
+# 3. print the unique values
+unique(hotel_data$PreviousCancellations)
+
+# 4. count by previous_cancellations and ratio
+count_by_previous_cancellations <- hotel_data %>%
+  group_by(PreviousCancellations) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_previous_cancellations
+
+# Transform into a factor, 0 for no cancellations, 1 for any cancellations
+hotel_data$CanceledBefore <- ifelse(hotel_data$PreviousCancellations > 0, 1, 0)
+
+# Factorize
+hotel_data$CanceledBefore <- as.factor(hotel_data$CanceledBefore)
+
+# Print the ratio after the transformation
+count_by_canceled_before <- hotel_data %>%
+  group_by(CanceledBefore) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_canceled_before
+
+# 5. plotting
+ggplot(hotel_data, aes(x = CanceledBefore)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Previous Cancellations",
+       x = "Previous Cancellations",
+       y = "Count")
+```
+
+```{r, reserved_room_type, collapse=TRUE}
+
+# We move on to variable "reserved_room_type"
+
+# 1. summary statistics
+summary(hotel_data$ReservedRoomType)
+
+# 2. missing values
+missing_reserved_room_type <- sum(is.na(hotel_data$ReservedRoomType))
+missing_reserved_room_type
+
+# 3. print the unique values
+unique(hotel_data$ReservedRoomType)
+
+# 4. count by reserved_room_type and ratio
+count_by_reserved_room_type <- hotel_data %>%
+  group_by(ReservedRoomType) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+
+# 5. plotting
+ggplot(hotel_data, aes(x = ReservedRoomType)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Reserved Room Type",
+       x = "Reserved Room Type",
+       y = "Count")
+```
+
+```{r, room_type_changed_after_reservation, collapse=TRUE}
+
+
+# We combine two variables: reserved_room_type and assigned_room_type to create a new variable: room_type_changed_after_reservation
+# If the reserved_room_type is different from the assigned_room_type, we consider the room type has been changed after reservation.
+
+# 1. create the new variable
+hotel_data$RoomTypeChanged <- ifelse(hotel_data$ReservedRoomType != hotel_data$AssignedRoomType, 1, 0)
+
+# Factorize
+hotel_data$RoomTypeChanged <- as.factor(hotel_data$RoomTypeChanged)
+
+# 2. print the ratio
+count_by_room_type_changed <- hotel_data %>%
+  group_by(RoomTypeChanged) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_room_type_changed
+
+# 3. plotting
+ggplot(hotel_data, aes(x = RoomTypeChanged)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Room Type Changed After Reservation",
+       x = "Room Type Changed",
+       y = "Count")
+
+# Check for correlation between this new variable and our target variable IsCanceled
+ggplot(
+  hotel_data,
+  aes(x = RoomTypeChanged, fill = factor(IsCanceled))
+) +
+  geom_bar(position = "fill") +
+  labs(
+    title = "Cancellation Rate by Room Type Changed After Reservation",
+    x = "Room Type Changed",
+    y = "Proportion",
+    fill = "Is Canceled"
+) + # Add color scheme to secondary_color and primary_color
+  scale_fill_manual(values = c(secondary_color, primary_color))
+
+```
+
+```{r, booking_changes, collapse=TRUE}
+
+# We move on to variable "booking_changes"
+
+# 1. summary statistics
+summary(hotel_data$BookingChanges)
+
+# 2. missing values
+missing_booking_changes <- sum(is.na(hotel_data$BookingChanges))
+
+# 3. print the unique values
+unique(hotel_data$BookingChanges)
+
+# 4. count by booking_changes and ratio
+count_by_booking_changes <- hotel_data %>%
+  group_by(BookingChanges) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+
+# 5. plotting
+ggplot(hotel_data, aes(x = BookingChanges)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Booking Changes",
+       x = "Booking Changes",
+       y = "Count")
+
+# Factorize into 0 for no changes, 1 for any changes
+hotel_data$BookingChanges_bin <- ifelse(hotel_data$BookingChanges > 0, 1, 0)
+hotel_data$BookingChanges_bin <- as.factor(hotel_data$BookingChanges_bin)
+
+# Print the ratio after the transformation
+count_by_booking_changes <- hotel_data %>%
+  group_by(BookingChanges_bin) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_booking_changes
+
+# Check for correlation between this new variable and our target variable IsCanceled
+ggplot(
+  hotel_data,
+  aes(x = BookingChanges_bin, fill = factor(IsCanceled))
+) +
+  geom_bar(position = "fill") +
+  labs(
+    title = "Cancellation Rate by Booking Changes",
+    x = "Booking Changes",
+    y = "Proportion",
+    fill = "Is Canceled"
+) + # Add color scheme to secondary_color and primary_color
+  scale_fill_manual(values = c(secondary_color, primary_color))
+```
+
+```{r, deposit_type, collapse=TRUE}
+
+# We move on to variable "deposit_type"
+
+# 1. summary statistics
+summary(hotel_data$DepositType)
+
+# 2. missing values
+missing_deposit_type <- sum(is.na(hotel_data$DepositType))
+missing_deposit_type
+
+# 3. print the unique values
+unique(hotel_data$DepositType)
+
+# 4. count by deposit_type and ratio
+count_by_deposit_type <- hotel_data %>%
+  group_by(DepositType) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_deposit_type
+
+# 5. plotting
+ggplot(hotel_data, aes(x = DepositType)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Deposit Type",
+       x = "Deposit Type",
+       y = "Count")
+
+# Factorize
+hotel_data$DepositType <- as.factor(hotel_data$DepositType)
+
+# Check for correlation between this new variable and our target variable IsCanceled
+ggplot(
+  hotel_data,
+  aes(x = DepositType, fill = factor(IsCanceled))
+) +
+  geom_bar(position = "fill") +
+  labs(
+    title = "Cancellation Rate by Deposit Type",
+    x = "Deposit Type",
+    y = "Proportion",
+    fill = "Is Canceled"
+) + # Add color scheme to secondary_color and primary_color
+  scale_fill_manual(values = c(secondary_color, primary_color))
+
+```
+
+```{r, Agent, collapse=TRUE}
+
+# We move on to variable "Agent"
+
+# 1. summary statistics
+summary(hotel_data$Agent)
+
+# 2. missing values
+missing_agent <- sum(is.na(hotel_data$Agent))
+missing_agent
+
+# 3. print the unique values
+unique(hotel_data$Agent)
+
+# 4. count by agent and ratio
+count_by_agent <- hotel_data %>%
+  group_by(Agent) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_agent
+
+# 5. plotting
+ggplot(hotel_data, aes(x = Agent)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Agent",
+       x = "Agent",
+       y = "Count")
+
+# 6. Bin into Agent and No Agent and save as a new variable
+hotel_data$Agent_bin <- ifelse(hotel_data$Agent == "NULL", 0, 1)
+# Factorize
+hotel_data$Agent_bin <- as.factor(hotel_data$Agent_bin)
+
+# Print the ratio after the transformation
+count_by_agent_bin <- hotel_data %>%
+  group_by(Agent_bin) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_agent_bin
+
+# Check for correlation between this new variable and our target variable IsCanceled
+ggplot(
+  hotel_data,
+  aes(x = Agent_bin, fill = factor(IsCanceled))
+) +
+  geom_bar(position = "fill") +
+  labs(
+    title = "Cancellation Rate by Agent",
+    x = "Agent",
+    y = "Proportion",
+    fill = "Is Canceled"
+) + # Add color scheme to secondary_color and primary_color
+  scale_fill_manual(values = c(secondary_color, primary_color))
+
+```
+
+```{r, company, collapse=TRUE}
+
+# We move on to variable "Company"
+
+# 1. summary statistics
+summary(hotel_data$Company)
+
+# 2. missing values
+missing_company <- sum(is.na(hotel_data$Company))
+missing_company
+
+# 3. print the unique values
+unique(hotel_data$Company)
+
+# 4. count by company and ratio
+count_by_company <- hotel_data %>%
+  group_by(Company) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+
+# 5. plotting
+ggplot(hotel_data, aes(x = Company)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Company",
+       x = "Company",
+       y = "Count")
+
+# 6. Bin into Company and No Company and save as a new variable
+hotel_data$Company_bin <- ifelse(hotel_data$Company == "NULL", 0, 1)
+
+# Factorize
+hotel_data$Company_bin <- as.factor(hotel_data$Company_bin)
+
+# Print the ratio after the transformation
+count_by_company_bin <- hotel_data %>%
+  group_by(Company_bin) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_company_bin
+
+```
+
+```{r, days_in_waiting_list, collapse=TRUE}
+
+# We move on to variable "DaysInWaitingList"
+
+# 1. summary statistics
+summary(hotel_data$DaysInWaitingList)
+
+# 2. missing values
+missing_days_in_waiting_list <- sum(is.na(hotel_data$DaysInWaitingList))
+missing_days_in_waiting_list
+
+# 3. print the unique values
+unique(hotel_data$DaysInWaitingList)
+
+# 4. count by days_in_waiting_list and ratio
+count_by_days_in_waiting_list <- hotel_data %>%
+  group_by(DaysInWaitingList) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / nrow(hotel_data))
+count_by_days_in_waiting_list
+
+# 5. plotting
+ggplot(hotel_data, aes(x = DaysInWaitingList)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Days In Waiting List",
+       x = "Days In Waiting List",
+       y = "Count")
+
+# 6. Bin into DaysInWaitingList and No DaysInWaitingList and save as a new variable
+hotel_data$DaysInWaitingList_bin <- ifelse(hotel_data$DaysInWaitingList > 0, 1, 0)
+
+# Factorize
+hotel_data$DaysInWaitingList_bin <- as.factor(hotel_data$DaysInWaitingList_bin)
+
+# Print the ratio after the transformation
+count_by_days_in_waiting_list_bin <- hotel_data %>%
+  group_by(DaysInWaitingList_bin) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_days_in_waiting_list_bin
+
+```
+
+```{r, customer_type, collapse=TRUE}
+
+# We move on to variable "CustomerType"
+
+# 1. summary statistics
+summary(hotel_data$CustomerType)
+
+# 2. missing values
+missing_customer_type <- sum(is.na(hotel_data$CustomerType))
+missing_customer_type
+
+# 3. print the unique values
+unique(hotel_data$CustomerType)
+
+# 4. count by customer_type and ratio
+count_by_customer_type <- hotel_data %>%
+  group_by(CustomerType) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_customer_type
+
+# 5. plotting
+ggplot(hotel_data, aes(x = CustomerType)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Customer Type",
+       x = "Customer Type",
+       y = "Count")
+
+# Factorize
+hotel_data$CustomerType <- as.factor(hotel_data$CustomerType)
+```
+
+```{r, required_car_parking_spaces, collapse=TRUE}
+
+# We move on to variable "RequiredCarParkingSpaces"
+
+# 1. summary statistics
+summary(hotel_data$RequiredCarParkingSpaces)
+
+# 2. missing values
+missing_required_car_parking_spaces <- sum(is.na(hotel_data$RequiredCarParkingSpaces))
+missing_required_car_parking_spaces
+
+# 3. print the unique values
+unique(hotel_data$RequiredCarParkingSpaces)
+
+# 4. count by required_car_parking_spaces and ratio
+count_by_required_car_parking_spaces <- hotel_data %>%
+  group_by(RequiredCarParkingSpaces) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_required_car_parking_spaces
+
+# 5. plotting
+ggplot(hotel_data, aes(x = RequiredCarParkingSpaces)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Required Car Parking Spaces",
+       x = "Required Car Parking Spaces",
+       y = "Count")
+
+# 6. Bin into RequiredCarParkingSpaces and No RequiredCarParkingSpaces and save as a new variable
+hotel_data$RequiredCarParkingSpaces_bin <- ifelse(hotel_data$RequiredCarParkingSpaces > 0, 1, 0)
+# Factorize
+hotel_data$RequiredCarParkingSpaces_bin <- as.factor(hotel_data$RequiredCarParkingSpaces_bin)
+
+# Print the ratio after the transformation
+count_by_required_car_parking_spaces_bin <- hotel_data %>%
+  group_by(RequiredCarParkingSpaces_bin) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_required_car_parking_spaces_bin
+```
+
+```{r, total_of_special_requests, collapse=TRUE}
+
+
+# We move on to variable "TotalOfSpecialRequests"
+
+# 1. summary statistics
+summary(hotel_data$TotalOfSpecialRequests)
+
+# 2. missing values
+missing_total_of_special_requests <- sum(is.na(hotel_data$TotalOfSpecialRequests))
+missing_total_of_special_requests
+
+# 3. print the unique values
+unique(hotel_data$TotalOfSpecialRequests)
+
+# 4. count by total_of_special_requests and ratio
+count_by_total_of_special_requests <- hotel_data %>%
+  group_by(TotalOfSpecialRequests) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_total_of_special_requests
+
+# 5. plotting
+ggplot(hotel_data, aes(x = TotalOfSpecialRequests)) +
+  geom_bar(fill = "#393992", color = "black") +
+  labs(title = "Distribution of Total Of Special Requests",
+       x = "Total Of Special Requests",
+       y = "Count")
+
+# 6. Bin into TotalOfSpecialRequests and No TotalOfSpecialRequests and save as a new variable
+hotel_data$TotalOfSpecialRequests_bin <- ifelse(hotel_data$TotalOfSpecialRequests > 0, 1, 0)
+# Factorize
+hotel_data$TotalOfSpecialRequests_bin <- as.factor(hotel_data$TotalOfSpecialRequests_bin)
+
+# Print the ratio after the transformation
+count_by_total_of_special_requests_bin <- hotel_data %>%
+  group_by(TotalOfSpecialRequests_bin) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_total_of_special_requests_bin
+
+```
+
+```{r, ReservationStatus, collapse=TRUE}
+
+
+# Check if this matches one to one with the IsCanceled variable
+# If IsCanceled = 1, then ReservationStatus should be "Canceled"
+# If IsCanceled = 0, then ReservationStatus should be "Check-Out" or "No-Show"
+not_matching <- which(hotel_data$IsCanceled == 1 & hotel_data$ReservationStatus != "Canceled")
+not_matching
+
+# Check the unique values of ReservationStatus
+unique(hotel_data$ReservationStatus)
+
+# Count by ReservationStatus
+count_by_reservation_status <- hotel_data %>%
+  group_by(ReservationStatus) %>%
+  summarise(Count = n()) %>%
+  mutate(Ratio = Count / sum(Count))
+count_by_reservation_status
+
+```
+
+```{r, check_missing_values, collapse=TRUE}
+
+# Check each variable for missing values
+missing_values <- colSums(is.na(hotel_data))
+```
+
+```{r, save_cleaned_data, collapse=TRUE}
+
+# Rename region and income_group
+hotel_data_cleaned <- hotel_data %>%
+  rename(
+    CountryIncomeGroup = income_group,
+    CountryRegion = region,
+  )
+
+# Export cleaned data
+hotel_data_cleaned <- hotel_data_cleaned %>%
+  dplyr::select(
+    IsCanceled,
+    LeadTime,
+    ArrivalDateMonth_Season,
+    PreviousBookingsNotCanceled,
+    StaysInWeekendNights,
+    StaysInWeekNights,
+    Adults,
+    Children,
+    Babies,
+    Meal,
+    CountryRegion,
+    CountryIncomeGroup,
+    MarketSegment,
+    IsRepeatedGuest,
+    BookingChanges,
+    DepositType,
+    Company_bin,
+    DaysInWaitingList,
+    CustomerType,
+    TotalOfSpecialRequests
+  )
+
+
+
+# Save the cleaned data
+write.xlsx(hotel_data_cleaned, "../data/hotel_data_cleaned.xlsx", rowNames = FALSE)
+```

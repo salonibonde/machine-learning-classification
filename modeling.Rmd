@@ -1,0 +1,767 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(openxlsx)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(pROC)
+library(gbm)
+library(randomForest)
+library(MASS)
+library(performanceEstimation)
+library(class)
+
+set.seed(123)
+
+results <- data.frame(
+  Model = character(),
+  Accuracy = numeric(),
+  Precision = numeric(),
+  Recall = numeric(),
+  AOC = numeric(),
+  stringsAsFactors = FALSE
+)
+```
+
+```{r, color_definitions}
+primary_color = "#191919ff"
+secondary_color = "#c67812ff"
+```
+
+# 0. Sampling
+
+```{r, load_data}
+
+set.seed(1997)
+
+# Load data
+hotel_data <- read_excel("../data/hotel_data_cleaned.xlsx")
+dim(hotel_data)
+
+# Create a dataframe from col names
+col_names <- data.frame(names(hotel_data))
+col_names
+
+numerical_names <- c("LeadTime")
+numerical <- hotel_data %>% dplyr::select(numerical_names)
+categorical <- hotel_data %>% dplyr::select(-one_of(numerical_names))
+
+# Factorize everything except for the LeadTime and PreviousCancellations variables
+# Use a loop
+for (i in 1:ncol(categorical)) {
+  categorical[[i]] <- as.factor(categorical[[i]])
+}
+
+# Merge data back together
+hotel_data <- cbind(numerical, categorical)
+
+
+# For each feature in a loop, check for na, nan, infinite
+for (i in 1:ncol(hotel_data)) {
+  print(paste("Feature: ", colnames(hotel_data)[i]))
+  print(paste("NA: ", sum(is.na(hotel_data[[i]]))))
+  print(paste("NaN: ", sum(is.nan(hotel_data[[i]]))))
+  print(paste("Inf: ", sum(is.infinite(hotel_data[[i]]))))
+}
+
+head(hotel_data)
+```
+
+```{r, split_data}
+
+# Split the data into training and testing sets
+set.seed(1997)
+
+# Sample the data to 2000 observations randomly
+hotel_data_sample <- hotel_data[sample(nrow(hotel_data), 4000), ]
+
+# 80% of the data will be used for training
+train_index <- createDataPartition(hotel_data_sample$IsCanceled, p = 0.75, list = FALSE)
+
+# Training set
+train_set <- hotel_data_sample[train_index, ]
+
+# Testing set
+test_set <- hotel_data_sample[-train_index, ]
+
+# Class balance
+class_balance <- prop.table(table(train_set$IsCanceled))
+threshold <- class_balance[2]
+```
+
+```{r, address_imbalance}
+
+set.seed(1997)
+
+# Addressing the class imbalance
+# We will use the SMOTE function from the DMwR package to address the class imbalance
+
+# 6. Addressing the class imbalance
+# Convert the IsCanceled variable to a factor
+train_set$IsCanceled <- as.factor(train_set$IsCanceled)
+
+# Apply the SMOTE function
+train_set_balanced <- smote(IsCanceled ~ ., data = train_set, perc.over = 1, k = 10, perc.under = 2)
+
+# Sanity Check
+table(train_set_balanced$IsCanceled)
+
+```
+
+# 1. Logistic Regression
+
+```{r, glm}
+
+set.seed(123)
+
+# Stepwise Logistic Regression
+# We will use the stepAIC function from the MASS package to perform stepwise logistic regression
+
+# 2. Fit the full model
+full_model <- glm(
+  IsCanceled ~ ., 
+  data = train_set, 
+  family = "binomial"
+)
+summary(full_model)
+
+# Make predictions on test set
+p_hat <- predict(full_model, newdata = test_set, type = "response")
+
+# Convert the probabilities to 0 or 1
+y_hat <- ifelse(p_hat > threshold, 1, 0)
+
+# Confusion matrix
+confusion_matrix <- table(test_set$IsCanceled, y_hat)
+confusion_matrix
+
+# Accuracy
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+
+
+# Precision and Recall
+precision <- confusion_matrix[2, 2] / sum(confusion_matrix[, 2])
+recall <- confusion_matrix[2, 2] / sum(confusion_matrix[2, ])
+cat("Accuracy", accuracy, "\n")
+cat("Precision: ", precision, "\n")
+cat("Recall: ", recall, "\n")
+
+# Generate AOC curve
+roc_curve <- roc(test_set$IsCanceled, p_hat)
+aoc <- auc(roc_curve)
+aoc
+p <- ggroc(
+  roc_curve, 
+  col = secondary_color, 
+  lwd = 2
+) +
+  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed") +
+  theme(panel.background = element_rect(fill = "transparent")) +
+  theme_minimal() + 
+  # Add AUC to the plot
+  annotate(
+    "text",
+    x = 0.8,
+    y = 1,
+    label = paste("AUC:", round(aoc, 2)),
+    size = 5,
+    color = secondary_color
+  )
+
+p
+
+ggsave(
+  plot = p,
+  filename = "./plots/glm_full_roc.png",
+  bg = "transparent"
+)
+
+# Add to results
+results <- rbind(
+  results,
+  data.frame(
+    Model = "Logistic Regression",
+    Accuracy = round(accuracy, 3),
+    Precision = round(precision, 3),
+    Recall = round(recall, 3),
+    AOC = round(aoc, 3)
+  )
+)
+
+```
+
+```{r, stepwise_logistic_regression}
+
+set.seed(123)
+
+# 3. Perform stepwise logistic regression
+stepwise_model <- stepAIC(full_model, direction = "backward", trace = FALSE)
+
+# 4. Summary of the stepwise model
+summary(stepwise_model)
+
+# 5. Predictions
+# Predictions on the testing set
+p_hat <- predict(stepwise_model, newdata = test_set, type = "response")
+
+# Convert the probabilities to 0 or 1
+y_hat <- ifelse(p_hat > threshold, 1, 0)
+
+# Confusion matrix
+confusion_matrix <- table(test_set$IsCanceled, p_hat)
+confusion_matrix
+
+# Accuracy
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+
+# Precision and Recall
+precision <- confusion_matrix[2, 2] / sum(confusion_matrix[, 2])
+recall <- confusion_matrix[2, 2] / sum(confusion_matrix[2, ])
+cat("Accuracy", accuracy, "\n")
+cat("Precision: ", precision, "\n")
+cat("Recall: ", recall, "\n")
+
+# Generate AOC curve
+roc_curve <- roc(test_set$IsCanceled, p_hat)
+aoc <- auc(roc_curve)
+aoc
+
+p <- ggroc(
+  roc_curve, 
+  col = secondary_color, 
+  lwd = 2,
+) +
+  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed") +
+  theme(panel.background = element_rect(fill = "transparent")) +
+  theme_minimal() +
+  # Add AUC to the plot
+  annotate(
+    "text",
+    x = 0.8,
+    y = 1,
+    label = paste("AUC:", round(aoc, 2)),
+    size = 5,
+    color = secondary_color
+  )
+
+p
+
+ggsave(
+  plot = p,
+  filename = "./plots/glm_aic_roc.png",
+  bg = "transparent"
+)
+
+# Add to results
+results <- rbind(
+  results,
+  data.frame(
+    Model = "Stepwise Logistic Regression",
+    Accuracy = round(accuracy, 3),
+    Precision = round(precision, 3),
+    Recall = round(recall, 3),
+    AOC = round(aoc, 3)
+  )
+)
+
+```
+
+```{r, stepwise_logistic_regression_balanced}
+
+set.seed(123)
+
+# Fit the stepwise logistic regression model on the balanced training set
+stepwise_model_balanced <- stepAIC(full_model, direction = "backward", trace = FALSE, data = train_set_balanced)
+
+# Predictions on the testing set
+p_hat <- predict(stepwise_model_balanced, newdata = test_set, type = "response")
+# Convert the probabilities to 0 or 1
+y_hat <- ifelse(p_hat > 0.5, 1, 0)
+
+# Confusion matrix
+confusion_matrix <- table(test_set$IsCanceled, y_hat)
+
+# Accuracy, Precision, Recall
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+precision <- confusion_matrix[2, 2] / sum(confusion_matrix[, 2])
+recall <- confusion_matrix[2, 2] / sum(confusion_matrix[2, ])
+
+cat("Accuracy", accuracy, "\n")
+cat("Precision: ", precision, "\n")
+cat("Recall: ", recall, "\n")
+
+# Generate AOC curve
+roc_curve <- roc(test_set$IsCanceled, p_hat)
+aoc <- auc(roc_curve)
+aoc
+
+p <- ggroc(
+  roc_curve, 
+  col = secondary_color,
+  lwd = 2,
+) +
+  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed") +
+  theme(panel.background = element_rect(fill = "transparent")) +
+  theme_minimal() +
+  # Add AUC to the plot
+  annotate(
+    "text",
+    x = 0.8,
+    y = 1,
+    label = paste("AUC:", round(aoc, 2)),
+    size = 5,
+    color = secondary_color
+  )
+
+p
+
+ggsave(
+  plot = p,
+  filename = "./plots/glm_smote_roc.png",
+  bg = "transparent"
+)
+
+# Add to results
+results <- rbind(
+  results,
+  data.frame(
+    Model = "Stepwise Logistic Regression (Balanced)",
+    Accuracy = round(accuracy, 3),
+    Precision = round(precision, 3),
+    Recall = round(recall, 3),
+    AOC = round(aoc, 3)
+  )
+)
+```
+
+# 2. Random Forest Classifier
+
+```{r, random_forest}
+
+set.seed(123)
+
+# Random Forest
+# We will use the randomForest function from the randomForest package to perform random forest classification
+
+# 2. Fit the random forest model
+rf_model <- randomForest(IsCanceled ~ ., data = train_set, ntree = 100, importance = TRUE)
+
+# 3. Predictions
+# Predictions on the testing set
+p_hat <- predict(rf_model, newdata = test_set, type = "prob")
+y_hat <- ifelse(p_hat[, 2] > threshold, 1, 0)
+
+# Confusion matrix
+confusion_matrix <- table(test_set$IsCanceled, y_hat)
+confusion_matrix
+
+# Accuracy, Precision, and Recall
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+precision <- confusion_matrix[2, 2] / sum(confusion_matrix[, 2])
+recall <- confusion_matrix[2, 2] / sum(confusion_matrix[2, ])
+
+cat("Accuracy", accuracy, "\n")
+cat("Precision: ", precision, "\n")
+cat("Recall: ", recall, "\n")
+
+# Generate AOC curve
+roc_curve <- roc(test_set$IsCanceled, p_hat[,2])
+aoc <- auc(roc_curve)
+aoc
+
+p <- ggroc(
+  roc_curve, 
+  col = secondary_color,
+  lwd = 2,
+) +
+  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed") +
+  theme(panel.background = element_rect(fill = "transparent")) +
+  theme_minimal() +
+  # Add AUC to the plot
+  annotate(
+    "text",
+    x = 0.8,
+    y = 1,
+    label = paste("AUC:", round(aoc, 2)),
+    size = 5,
+    color = secondary_color
+  )
+
+p
+
+ggsave(
+  plot = p,
+  filename = "./plots/random_forest_roc.png",
+  bg = "transparent"
+)
+
+# Add to results
+results <- rbind(
+  results,
+  data.frame(
+    Model = "Random Forest",
+    Accuracy = round(accuracy, 3),
+    Precision = round(precision, 3),
+    Recall = round(recall, 3),
+    AOC = round(aoc, 3)
+  )
+)
+
+```
+
+```{r, random_forest_hyperparameter_tuning}
+
+set.seed(123)
+
+# Random Forest
+# We will use the randomForest function from the randomForest package to perform random forest classification
+
+# Define the control method for training (method for repeated cross-validation here)
+train_control <- trainControl(method = "repeatedcv",
+                              number = 10,
+                              repeats = 3,
+                              search = "grid")
+
+# Define the tuning grid. You can expand this grid based on your computational resources
+tuning_grid <- expand.grid(.mtry = c(2, sqrt(ncol(train_set)-1), ncol(train_set)-1),
+                           .splitrule = c("gini", "extratrees"),
+                           .min.node.size = c(1, 5, 10))
+
+# Fit the model using caret's train function
+set.seed(123) # for reproducibility
+?train
+rf_model_tuned <- train(IsCanceled ~ .,
+                        data = train_set,
+                        method = "ranger",
+                        trControl = train_control,
+                        tuneGrid = tuning_grid,
+                        importance = 'impurity',
+                        metric = "Accuracy")
+
+# Print the results
+print(rf_model_tuned)
+
+# 2. Fit the random forest model
+rf_model <- randomForest(
+  IsCanceled ~ ., 
+  data = train_set, 
+  mtry = 4.47,
+  splitrule = "gini",
+  min.node.size = 10,
+)
+
+# Predictions using the tuned model
+p_hat_tuned <- predict(rf_model, newdata = test_set, type = "prob")
+threshold <- 0.5 # Define your threshold
+y_hat_tuned <- ifelse(p_hat_tuned[, 2] > threshold, 1, 0)
+
+# Confusion matrix for the tuned model
+confusion_matrix_tuned <- table(test_set$IsCanceled, y_hat_tuned)
+print(confusion_matrix_tuned)
+
+# Accuracy, Precision, and Recall for the tuned model
+accuracy_tuned <- sum(diag(confusion_matrix_tuned)) / sum(confusion_matrix_tuned)
+precision_tuned <- confusion_matrix_tuned[2, 2] / sum(confusion_matrix_tuned[, 2])
+recall_tuned <- confusion_matrix_tuned[2, 2] / sum(confusion_matrix_tuned[2, ])
+list(Accuracy = accuracy_tuned, Precision = precision_tuned, Recall = recall_tuned)
+
+# Generate AOC curve
+roc_curve <- roc(test_set$IsCanceled, p_hat_tuned[,2])
+aoc <- auc(roc_curve)
+aoc
+
+p <- ggroc(
+  roc_curve, 
+  col = secondary_color,
+  lwd = 2,
+) +
+  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed") +
+  theme(panel.background = element_rect(fill = "transparent")) +
+  theme_minimal() +
+  # Add AUC to the plot
+  annotate(
+    "text",
+    x = 0.8,
+    y = 1,
+    label = paste("AUC:", round(aoc, 2)),
+    size = 5,
+    color = secondary_color
+  )
+
+p
+
+ggsave(
+  plot = p,
+  filename = "./plots/random_forest_tuning_roc.png",
+  bg = "transparent"
+)
+
+# Add to results
+results <- rbind(
+  results,
+  data.frame(
+    Model = "Random Forest, Tuned",
+    Accuracy = round(accuracy_tuned, 3),
+    Precision = round(precision_tuned, 3),
+    Recall = round(recall_tuned, 3),
+    AOC = round(aoc, 3)
+  )
+)
+
+```
+
+```{r, random_forest_smote}
+
+set.seed(123)
+
+# Random Forest
+# We will use the randomForest function from the randomForest package to perform random forest classification
+
+# 2. Fit the random forest model
+rf_model <- randomForest(
+  IsCanceled ~ ., 
+  data = train_set_balanced, 
+  mtry = 4.47,
+  splitrule = "gini",
+  min.node.size = 10,
+)
+
+# 3. Predictions
+# Predictions on the testing set
+p_hat <- predict(rf_model, newdata = test_set, type = "prob")
+y_hat <- ifelse(p_hat[, 2] > 0.5, 1, 0)
+
+# Confusion matrix
+confusion_matrix <- table(test_set$IsCanceled, y_hat)
+confusion_matrix
+
+# Accuracy, Precision, Recall
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+precision <- confusion_matrix[2, 2] / sum(confusion_matrix[, 2])
+recall <- confusion_matrix[2, 2] / sum(confusion_matrix[2, ])
+
+cat("Accuracy", accuracy, "\n")
+cat("Precision: ", precision, "\n")
+cat("Recall: ", recall, "\n")
+
+
+# Generate AOC curve
+roc_curve <- roc(test_set$IsCanceled, p_hat[,2])
+aoc <- auc(roc_curve)
+aoc
+
+p <- ggroc(
+  roc_curve, 
+  col = secondary_color,
+  lwd = 2,
+) +
+  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed") +
+  theme(panel.background = element_rect(fill = "transparent")) +
+  theme_minimal() +
+  # Add AUC to the plot
+  annotate(
+    "text",
+    x = 0.8,
+    y = 1,
+    label = paste("AUC:", round(aoc, 2)),
+    size = 5,
+    color = secondary_color
+  )
+
+p
+
+ggsave(
+  plot = p,
+  filename = "./plots/random_forest_smote_roc.png",
+  bg = "transparent"
+)
+
+# Add to results
+results <- rbind(
+  results,
+  data.frame(
+    Model = "Random Forest, Tuned + SMOTE",
+    Accuracy = round(accuracy, 3),
+    Precision = round(precision, 3),
+    Recall = round(recall, 3),
+    AOC = round(aoc, 3)
+  )
+)
+
+```
+
+# 3. KNN Classifier
+
+```{r, knn}
+
+set.seed(123)
+
+# KNN
+# We will use the knn function from the class package to perform k-nearest neighbors classification
+
+myCtrl <- trainControl(method = "cv",number = 10)
+myGrid <- expand.grid(.k=c(1:15))
+
+#Model one with all the predictors
+knn_model1 <- train(
+  IsCanceled ~ ., 
+  data = train_set,
+  method = "knn",
+  trControl = myCtrl,
+  tuneGrid = myGrid
+)
+summary(knn_model1)
+
+knn_model1_p <- predict(knn_model1, newdata = test_set, type = "prob")
+knn_model1_y <- ifelse(knn_model1_p[,2] > threshold, 1, 0) 
+
+# Confusion matrix
+confusion_matrix <- table(test_set$IsCanceled, knn_model1_y)
+
+# Accuracy, Precision and Recall
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+precision <- confusion_matrix[2, 2] / sum(confusion_matrix[, 2])
+recall <- confusion_matrix[2, 2] / sum(confusion_matrix[2, ])
+
+cat("Accuracy", accuracy, "\n")
+cat("Precision: ", precision, "\n")
+cat("Recall: ", recall, "\n")
+
+
+# Generate AOC curve
+roc_curve <- roc(test_set$IsCanceled, knn_model1_p[,2])
+aoc <- auc(roc_curve)
+aoc
+
+p <- ggroc(
+  roc_curve, 
+  col = secondary_color,
+  lwd = 2,
+) +
+  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed") +
+  theme(panel.background = element_rect(fill = "transparent")) +
+  theme_minimal() +
+  # Add AUC to the plot
+  annotate(
+    "text",
+    x = 0.8,
+    y = 1,
+    label = paste("AUC:", round(aoc, 2)),
+    size = 5,
+    color = secondary_color
+  )
+
+p
+
+ggsave(
+  plot = p,
+  filename = "./plots/knn_roc.png",
+  bg = "transparent"
+)
+
+# Add to results
+results <- rbind(
+  results,
+  data.frame(
+    Model = "KNN",
+    Accuracy = round(accuracy, 3),
+    Precision = round(precision, 3),
+    Recall = round(recall, 3),
+    AOC = round(aoc, 3)
+  )
+)
+```
+
+```{r, knn_smote}
+
+set.seed(123)
+
+# KNN
+# We will use the knn function from the class package to perform k-nearest neighbors classification
+
+# 2. Fit the KNN model
+
+# KNN
+# We will use the knn function from the class package to perform k-nearest neighbors classification
+
+myCtrl <- trainControl(method = "cv", number = 10)
+myGrid <- expand.grid(.k = c(1:15))
+
+#Model one with all the predictors
+knn_model3 <- train(
+  IsCanceled ~ ., 
+  data = train_set_balanced,
+  method = "knn",
+  trControl = myCtrl,
+  tuneGrid = myGrid
+)
+
+knn_model3_p <- predict(knn_model3, newdata = test_set, type = "prob")
+knn_model3_y <- ifelse(knn_model3_p[,2] > threshold, 1, 0) 
+
+# Confusion matrix
+confusion_matrix <- table(test_set$IsCanceled, knn_model3_y)
+confusion_matrix
+
+# Accuracy, Precision and Recall
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+precision <- confusion_matrix[2, 2] / sum(confusion_matrix[, 2])
+recall <- confusion_matrix[2, 2] / sum(confusion_matrix[2, ])
+
+cat("Accuracy", accuracy, "\n")
+cat("Precision: ", precision, "\n")
+cat("Recall: ", recall, "\n")
+
+# Generate AOC curve
+roc_curve <- roc(test_set$IsCanceled, knn_model3_p[,2])
+aoc <- auc(roc_curve)
+aoc
+
+p <- ggroc(
+  roc_curve, 
+  col = secondary_color,
+  lwd = 2,
+) +
+  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed") +
+  theme(panel.background = element_rect(fill = "transparent")) +
+  theme_minimal() +
+  # Add AUC to the plot
+  annotate(
+    "text",
+    x = 0.8,
+    y = 1,
+    label = paste("AUC:", round(aoc, 2)),
+    size = 5,
+    color = secondary_color
+  )
+
+p
+
+ggsave(
+  plot = p,
+  filename = "./plots/knn_smote_roc.png",
+  bg = "transparent"
+)
+
+# Add to results
+results <- rbind(
+  results,
+  data.frame(
+    Model = "KNN + SMOTE",
+    Accuracy = round(accuracy, 3),
+    Precision = round(precision, 3),
+    Recall = round(recall, 3),
+    AOC = round(aoc, 3)
+  )
+)
+```
+
+# Results
+
+```{r, results}
+
+results
+
+```
